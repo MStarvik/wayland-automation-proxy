@@ -49,7 +49,7 @@ int main(int argc, char *argv[]) {
     int client_fd = -1;
     int upstream_fd = -1;
 
-    int server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    int server_fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (server_fd < 0) {
         perror("socket downstream");
         return EXIT_FAILURE;
@@ -63,12 +63,14 @@ int main(int argc, char *argv[]) {
     if (bind(server_fd, (struct sockaddr *)&downstream_addr, sizeof(downstream_addr)) < 0) {
         perror("bind downstream");
         close(server_fd);
+        unlink(downstream_addr.sun_path);
         return EXIT_FAILURE;
     }
 
     if (listen(server_fd, 1) < 0) {
         perror("listen downstream");
         close(server_fd);
+        unlink(downstream_addr.sun_path);
         return EXIT_FAILURE;
     }
 
@@ -76,46 +78,50 @@ int main(int argc, char *argv[]) {
     if (flags < 0) {
         perror("fcntl");
         close(server_fd);
+        unlink(downstream_addr.sun_path);
         return EXIT_FAILURE;
     }
 
     if (fcntl(server_fd, F_SETFL, flags | O_NONBLOCK) < 0) {
         perror("fcntl set O_NONBLOCK");
         close(server_fd);
+        unlink(downstream_addr.sun_path);
         return EXIT_FAILURE;
     }
 
     struct pollfd fds[3];
     fds[0].fd = server_fd;
-    fds[0].events = POLLIN | POLLERR | POLLHUP;
+    fds[0].events = POLLIN;
     fds[1].fd = client_fd;
-    fds[1].events = POLLIN | POLLERR | POLLHUP;
+    fds[1].events = POLLIN;
     fds[2].fd = upstream_fd;
-    fds[2].events = POLLIN | POLLERR | POLLHUP;
+    fds[2].events = POLLIN;
 
     pid_t pid = fork();
     if (pid < 0) {
         perror("fork");
         close(server_fd);
+        unlink(downstream_addr.sun_path);
         return EXIT_FAILURE;
     }
 
     if (pid == 0) {
+        close(server_fd);
+
         if (setenv("WAYLAND_DISPLAY", downstream_display, 1) < 0) {
             perror("setenv");
-            close(server_fd);
             exit(EXIT_FAILURE);
         }
 
         if (execvp(argv[1], &argv[1]) < 0) {
             perror("execvp");
-            close(server_fd);
             exit(EXIT_FAILURE);
         }
     }
 
     signal(SIGINT, signal_handler);
 
+    int ret = EXIT_SUCCESS;
     while (running) {
         int nfds = client_fd >= 0 ? 3 : 1;
         int nevents = ppoll(fds, nfds, NULL, NULL);
@@ -124,63 +130,49 @@ int main(int argc, char *argv[]) {
                 break;
             }
             perror("poll");
-            close(server_fd);
-            return EXIT_FAILURE;
+            ret = EXIT_FAILURE;
+            break;
         }
             
         if (fds[0].revents & POLLIN) {
             client_fd = accept(server_fd, NULL, NULL);
             if (client_fd < 0) {
                 perror("accept");
-                close(server_fd);
-                return EXIT_FAILURE;
+                ret = EXIT_FAILURE;
+                break;
             }
 
             int flags = fcntl(client_fd, F_GETFL, 0);
             if (flags < 0) {
                 perror("fcntl");
-                close(client_fd);
-                close(server_fd);
-                return EXIT_FAILURE;
+                ret = EXIT_FAILURE;
+                break;
             }
 
             if (fcntl(server_fd, F_SETFL, flags | O_NONBLOCK) < 0) {
                 perror("fcntl set O_NONBLOCK");
-                close(client_fd);
-                close(server_fd);
-                return EXIT_FAILURE;
+                ret = EXIT_FAILURE;
+                break;
             }
-
-            // Here you would typically handle the client connection
-            // For example, you could read from the client_fd or send data to it
-            printf("Accepted connection on downstream display\n");
-
-            // Close the client socket after handling it
-            // close(client_fd);
 
             upstream_fd = socket(AF_UNIX, SOCK_STREAM, 0);
             if (upstream_fd < 0) {
                 perror("socket upstream");
-                close(client_fd);
-                close(server_fd);
-                return EXIT_FAILURE;
+                ret = EXIT_FAILURE;
+                break;
             }
 
             flags = fcntl(upstream_fd, F_GETFL, 0);
             if (flags < 0) {
                 perror("fcntl");
-                close(client_fd);
-                close(upstream_fd);
-                close(server_fd);
-                return EXIT_FAILURE;
+                ret = EXIT_FAILURE;
+                break;
             }
 
             if (fcntl(upstream_fd, F_SETFL, flags | O_NONBLOCK) < 0) {
                 perror("fcntl set O_NONBLOCK");
-                close(client_fd);
-                close(upstream_fd);
-                close(server_fd);
-                return EXIT_FAILURE;
+                ret = EXIT_FAILURE;
+                break;
             }
 
             struct sockaddr_un upstream_addr;
@@ -188,39 +180,15 @@ int main(int argc, char *argv[]) {
             snprintf(upstream_addr.sun_path, sizeof(upstream_addr.sun_path), "%s/%s", runtime_dir, upstream_display);
             if (connect(upstream_fd, (struct sockaddr *)&upstream_addr, sizeof(upstream_addr)) < 0) {
                 perror("connect upstream");
-                close(client_fd);
-                close(upstream_fd);
-                close(server_fd);
-                return EXIT_FAILURE;
+                ret = EXIT_FAILURE;
+                break;
             }
-
-            printf("Connected to upstream display %s\n", upstream_display);
 
             fds[1].fd = client_fd;
             fds[2].fd = upstream_fd;
         }
 
         if (fds[1].revents & POLLIN) {
-            // char buffer[256];
-            // ssize_t bytes_read = read(client_fd, buffer, sizeof(buffer));
-            // if (bytes_read < 0) {
-            //     perror("read from client");
-            //     close(client_fd);
-            //     close(upstream_fd);
-            //     break;
-            // } else if (bytes_read == 0) {
-            //     printf("Client disconnected\n");
-            //     close(client_fd);
-            //     client_fd = -1;
-            //     fds[1].fd = -1;
-            // } else {
-            //     // Handle data from the client
-            //     printf("Read %zd bytes from client\n", bytes_read);
-
-            //     write(upstream_fd, buffer, bytes_read);
-            //     printf("Wrote %zd bytes to upstream display\n", bytes_read);
-            // }
-
             char buffer[BLEN];
             char control[CLEN];
 
@@ -239,21 +207,23 @@ int main(int argc, char *argv[]) {
             ssize_t n = recvmsg(client_fd, &msg, 0);
             if (n < 0) {
                 perror("recvmsg from client");
-                close(client_fd);
-                close(upstream_fd);
+                ret = EXIT_FAILURE;
                 break;
             } else if (n == 0) {
-                printf("Client disconnected\n");
                 close(client_fd);
                 client_fd = -1;
                 fds[1].fd = -1;
+
+                close(upstream_fd);
+                upstream_fd = -1;
+                fds[2].fd = -1;
+
+                break;
             } else {
                 iov.iov_len = n;
 
                 if (sendmsg(upstream_fd, &msg, 0) < 0) {
                     perror("sendmsg to upstream");
-                    close(client_fd);
-                    close(upstream_fd);
                     break;
                 }
 
@@ -292,21 +262,24 @@ int main(int argc, char *argv[]) {
             ssize_t n = recvmsg(upstream_fd, &msg, 0);
             if (n < 0) {
                 perror("recvmsg from upstream");
-                close(client_fd);
-                close(upstream_fd);
+                ret = EXIT_FAILURE;
                 break;
             } else if (n == 0) {
-                printf("Upstream display disconnected\n");
                 close(upstream_fd);
                 upstream_fd = -1;
                 fds[2].fd = -1;
+
+                close(client_fd);
+                client_fd = -1;
+                fds[1].fd = -1;
+
+                break;
             } else {
                 iov.iov_len = n;
 
                 if (sendmsg(client_fd, &msg, 0) < 0) {
                     perror("sendmsg to client");
-                    close(client_fd);
-                    close(upstream_fd);
+                    ret = EXIT_FAILURE;
                     break;
                 }
 
@@ -322,24 +295,18 @@ int main(int argc, char *argv[]) {
                 }
             }
         }
+    }
 
-        if (fds[0].revents & (POLLERR | POLLHUP)) {
-            fprintf(stderr, "Error or hangup on downstream display\n");
-            break;
-        }
+    if (upstream_fd >= 0) {
+        close(upstream_fd);
+    }
 
-        if (fds[1].revents & (POLLERR | POLLHUP)) {
-            fprintf(stderr, "Error or hangup on client connection\n");
-            break;
-        }
-
-        if (fds[2].revents & (POLLERR | POLLHUP)) {
-            fprintf(stderr, "Error or hangup on upstream display\n");
-            break;
-        }
+    if (client_fd >= 0) {
+        close(client_fd);
     }
 
     close(server_fd);
+    unlink(downstream_addr.sun_path);
 
-    return 0;
+    return ret;
 }
