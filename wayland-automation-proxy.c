@@ -17,8 +17,8 @@
 
 
 #define MAX_FDS 28
-#define BLEN 4096
-#define CLEN (CMSG_LEN(MAX_FDS * sizeof(int32_t)))
+#define BUFFER_LEN 4096
+#define CONTROL_LEN (CMSG_LEN(MAX_FDS * sizeof(int32_t)))
 
 volatile sig_atomic_t running = 1;
 
@@ -29,6 +29,9 @@ static void signal_handler(int signum) {
 }
 
 int main(int argc, char *argv[]) {
+    char buffer[BUFFER_LEN];
+    char control[CONTROL_LEN];
+
     int client_fd = -1;
     int upstream_fd = -1;
 
@@ -36,6 +39,7 @@ int main(int argc, char *argv[]) {
     uint32_t wl_seat_id = 0;
     uint32_t wl_pointer_id = 0;
     uint32_t wl_keyboard_id = 0;
+    uint32_t wl_touch_id = 0;
 
     if (argc < 2) {
         fprintf(stderr, "Usage: %s <command>\n", argv[0]);
@@ -203,9 +207,6 @@ int main(int argc, char *argv[]) {
         }
 
         if (fds[1].revents & POLLIN) {
-            char buffer[BLEN];
-            char control[CLEN];
-
             struct iovec iov = {
                 .iov_base = buffer,
                 .iov_len = sizeof(buffer)
@@ -240,49 +241,32 @@ int main(int argc, char *argv[]) {
                     uint32_t id = p[0];
                     uint16_t opcode = p[1] & 0xFFFF;
                     uint16_t size = p[1] >> 16;
-
-                    if (id == 1) {
-                        // printf("<- %s.%s\n",
-                        //     wl_display_interface.name,
-                        //     wl_display_interface.methods[opcode].name);
-
-                        if (opcode == 1) {
-                            // printf("wl_registry id: %u\n", p[2]);
+                    if (id == 1) { // wl_display
+                        if (opcode == 1) { // wl_display.get_registry
                             wl_registry_id = p[2];
                         }
-                    } else if (id == wl_registry_id) {
-                        // printf("<- %s.%s\n",
-                        //     wl_registry_interface.name,
-                        //     wl_registry_interface.methods[opcode].name);
-                        
-                        if (opcode == 0) {
-                            uint32_t name = p[2];
+                    } else if (id == wl_registry_id) { // wl_registry
+                        if (opcode == 0) { // wl_registry.bind
+                            // uint32_t name = p[2];
                             uint32_t interface_len = p[3];
                             const char *interface = (const char *)(p + 4);
-                            uint32_t version = p[4 + (interface_len + 3) / 4];
+                            // uint32_t version = p[4 + (interface_len + 3) / 4];
                             uint32_t new_id = p[4 + (interface_len + 3) / 4 + 1];
 
-                            // printf("     id: %u, interface: %.*s, version: %u, new_id: %u\n",
-                            //     name, interface_len, interface, version, new_id);
-                            
                             if (strcmp(interface, wl_seat_interface.name) == 0) {
-                                // printf("     id: %u, interface: %.*s, version: %u, new_id: %u\n",
-                                //     name, interface_len, interface, version, new_id);
-
                                 wl_seat_id = new_id;
                             }
                         }
-                    } else if (id == wl_seat_id) {
-                        // printf("<- %s.%s\n",
-                        //     wl_seat_interface.name,
-                        //     wl_seat_interface.methods[opcode].name);
-                        
-                        if (opcode == 0) {
+                    } else if (id == wl_seat_id) { // wl_seat
+                        if (opcode == 0) { // wl_seat.get_pointer
                             uint32_t new_id = p[2];
                             wl_pointer_id = new_id;
-                        } else if (opcode == 1) {
+                        } else if (opcode == 1) { // wl_seat.get_keyboard
                             uint32_t new_id = p[2];
                             wl_keyboard_id = new_id;
+                        } else if (opcode == 2) { // wl_seat.get_touch
+                            uint32_t new_id = p[2];
+                            wl_touch_id = new_id;
                         }
                     }
 
@@ -310,9 +294,6 @@ int main(int argc, char *argv[]) {
         }
 
         if (fds[2].revents & POLLIN) {
-            char buffer[BLEN];
-            char control[CLEN];
-
             struct iovec iov = {
                 .iov_base = buffer,
                 .iov_len = sizeof(buffer)
@@ -352,45 +333,22 @@ int main(int argc, char *argv[]) {
                     uint32_t id = p[0];
                     uint16_t opcode = p[1] & 0xFFFF;
                     uint16_t size = p[1] >> 16;
-
-                    if (id == 1) {
-                        // printf("-> %s.%s\n",
-                        //     wl_display_interface.name,
-                        //     wl_display_interface.events[opcode].name);
-                    } else if (id == wl_registry_id) {
-                        // printf("-> %s.%s\n",
-                        //     wl_registry_interface.name,
-                        //     wl_registry_interface.events[opcode].name);
-                        
-                        if (opcode == 0) {
-                            uint32_t name = p[2];
-                            uint32_t interface_len = p[3];
-                            const char *interface = (const char *)(p + 4);
-                            uint32_t version = p[4 + (interface_len + 3) / 4];
-
-                            // printf("     id: %u, interface: %.*s, version: %u\n",
-                            //     name, interface_len, interface, version);
-                        }
-                    } else if (id == wl_seat_id) {
-                        // printf("-> %s.%s\n",
-                        //     wl_seat_interface.name,
-                        //     wl_seat_interface.events[opcode].name);
-                    } else if (id == wl_pointer_id) {
-                        if (opcode <= 4) {
-                            accept = false;
-                        }
+                    if (id == wl_pointer_id) { // wl_pointer
+                        accept = false; // wl_pointer.*
 
                         printf("-> %s.%s\n",
                             wl_pointer_interface.name,
                             wl_pointer_interface.events[opcode].name);
-                    } else if (id == wl_keyboard_id) {
-                        if (opcode >= 1 && opcode <= 3) {
+                    } else if (id == wl_keyboard_id) { // wl_keyboard
+                        if (opcode >= 1 && opcode <= 4) { //wl_keyboard.{enter,leave,key,modifiers}
                             accept = false;
                         }
 
                         printf("-> %s.%s\n",
                             wl_keyboard_interface.name,
                             wl_keyboard_interface.events[opcode].name);
+                    } else if (id == wl_touch_id) { // wl_touch
+                        accept = false; // wl_touch.*
                     }
 
                     p += size / 4;
@@ -398,21 +356,20 @@ int main(int argc, char *argv[]) {
 
                 if (accept) {
                     iov.iov_len = n;
-
                     if (sendmsg(client_fd, &msg, 0) < 0) {
                         perror("sendmsg to client");
                         ret = EXIT_FAILURE;
                         break;
                     }
+                }
 
-                    struct cmsghdr *cmsg;
-                    for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
-                        if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
-                            int *fds = (int *)CMSG_DATA(cmsg);
-                            int nfds = (cmsg->cmsg_len - CMSG_LEN(0)) / sizeof(int32_t);
-                            for (int i = 0; i < nfds; i++) {
-                                close(fds[i]);
-                            }
+                struct cmsghdr *cmsg;
+                for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+                    if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
+                        int *fds = (int *)CMSG_DATA(cmsg);
+                        int nfds = (cmsg->cmsg_len - CMSG_LEN(0)) / sizeof(int32_t);
+                        for (int i = 0; i < nfds; i++) {
+                            close(fds[i]);
                         }
                     }
                 }
