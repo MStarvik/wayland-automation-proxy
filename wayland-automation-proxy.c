@@ -1,18 +1,20 @@
 #define _GNU_SOURCE
 
-#include <wayland-client-protocol.h>
-#include <wayland-server-protocol.h>
-#include <wayland-util.h>
+// #include <wayland-server.h>
+#include <wayland-client.h>
 
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+
 
 #define MAX_FDS 28
 #define BLEN 4096
@@ -27,6 +29,14 @@ static void signal_handler(int signum) {
 }
 
 int main(int argc, char *argv[]) {
+    int client_fd = -1;
+    int upstream_fd = -1;
+
+    uint32_t wl_registry_id = 0;
+    uint32_t wl_seat_id = 0;
+    uint32_t wl_pointer_id = 0;
+    uint32_t wl_keyboard_id = 0;
+
     if (argc < 2) {
         fprintf(stderr, "Usage: %s <command>\n", argv[0]);
         return EXIT_FAILURE;
@@ -45,9 +55,6 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "XDG_RUNTIME_DIR is not set\n");
         return EXIT_FAILURE;
     }
-
-    int client_fd = -1;
-    int upstream_fd = -1;
 
     int server_fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (server_fd < 0) {
@@ -135,6 +142,11 @@ int main(int argc, char *argv[]) {
         }
             
         if (fds[0].revents & POLLIN) {
+            if (client_fd >= 0) {
+                fprintf(stderr, "Unexpected client connection while already connected\n");
+                continue;
+            }
+
             client_fd = accept(server_fd, NULL, NULL);
             if (client_fd < 0) {
                 perror("accept");
@@ -186,6 +198,8 @@ int main(int argc, char *argv[]) {
 
             fds[1].fd = client_fd;
             fds[2].fd = upstream_fd;
+
+            // display = wl_display_connect_to_fd(upstream_fd);
         }
 
         if (fds[1].revents & POLLIN) {
@@ -220,6 +234,61 @@ int main(int argc, char *argv[]) {
 
                 break;
             } else {
+                uint32_t *p = (uint32_t *)buffer;
+                uint32_t *end = (uint32_t *)(buffer + n);
+                while (p < end) {
+                    uint32_t id = p[0];
+                    uint16_t opcode = p[1] & 0xFFFF;
+                    uint16_t size = p[1] >> 16;
+
+                    if (id == 1) {
+                        // printf("<- %s.%s\n",
+                        //     wl_display_interface.name,
+                        //     wl_display_interface.methods[opcode].name);
+
+                        if (opcode == 1) {
+                            // printf("wl_registry id: %u\n", p[2]);
+                            wl_registry_id = p[2];
+                        }
+                    } else if (id == wl_registry_id) {
+                        // printf("<- %s.%s\n",
+                        //     wl_registry_interface.name,
+                        //     wl_registry_interface.methods[opcode].name);
+                        
+                        if (opcode == 0) {
+                            uint32_t name = p[2];
+                            uint32_t interface_len = p[3];
+                            const char *interface = (const char *)(p + 4);
+                            uint32_t version = p[4 + (interface_len + 3) / 4];
+                            uint32_t new_id = p[4 + (interface_len + 3) / 4 + 1];
+
+                            // printf("     id: %u, interface: %.*s, version: %u, new_id: %u\n",
+                            //     name, interface_len, interface, version, new_id);
+                            
+                            if (strcmp(interface, wl_seat_interface.name) == 0) {
+                                // printf("     id: %u, interface: %.*s, version: %u, new_id: %u\n",
+                                //     name, interface_len, interface, version, new_id);
+
+                                wl_seat_id = new_id;
+                            }
+                        }
+                    } else if (id == wl_seat_id) {
+                        // printf("<- %s.%s\n",
+                        //     wl_seat_interface.name,
+                        //     wl_seat_interface.methods[opcode].name);
+                        
+                        if (opcode == 0) {
+                            uint32_t new_id = p[2];
+                            wl_pointer_id = new_id;
+                        } else if (opcode == 1) {
+                            uint32_t new_id = p[2];
+                            wl_keyboard_id = new_id;
+                        }
+                    }
+
+                    p += size / 4;
+                }
+
                 iov.iov_len = n;
 
                 if (sendmsg(upstream_fd, &msg, 0) < 0) {
@@ -275,21 +344,75 @@ int main(int argc, char *argv[]) {
 
                 break;
             } else {
-                iov.iov_len = n;
+                bool accept = true;
 
-                if (sendmsg(client_fd, &msg, 0) < 0) {
-                    perror("sendmsg to client");
-                    ret = EXIT_FAILURE;
-                    break;
+                uint32_t *p = (uint32_t *)buffer;
+                uint32_t *end = (uint32_t *)(buffer + n);
+                while (p < end) {
+                    uint32_t id = p[0];
+                    uint16_t opcode = p[1] & 0xFFFF;
+                    uint16_t size = p[1] >> 16;
+
+                    if (id == 1) {
+                        // printf("-> %s.%s\n",
+                        //     wl_display_interface.name,
+                        //     wl_display_interface.events[opcode].name);
+                    } else if (id == wl_registry_id) {
+                        // printf("-> %s.%s\n",
+                        //     wl_registry_interface.name,
+                        //     wl_registry_interface.events[opcode].name);
+                        
+                        if (opcode == 0) {
+                            uint32_t name = p[2];
+                            uint32_t interface_len = p[3];
+                            const char *interface = (const char *)(p + 4);
+                            uint32_t version = p[4 + (interface_len + 3) / 4];
+
+                            // printf("     id: %u, interface: %.*s, version: %u\n",
+                            //     name, interface_len, interface, version);
+                        }
+                    } else if (id == wl_seat_id) {
+                        // printf("-> %s.%s\n",
+                        //     wl_seat_interface.name,
+                        //     wl_seat_interface.events[opcode].name);
+                    } else if (id == wl_pointer_id) {
+                        if (opcode <= 4) {
+                            accept = false;
+                        }
+
+                        printf("-> %s.%s\n",
+                            wl_pointer_interface.name,
+                            wl_pointer_interface.events[opcode].name);
+                    } else if (id == wl_keyboard_id) {
+                        if (opcode >= 1 && opcode <= 3) {
+                            accept = false;
+                        }
+
+                        printf("-> %s.%s\n",
+                            wl_keyboard_interface.name,
+                            wl_keyboard_interface.events[opcode].name);
+                    }
+
+                    p += size / 4;
                 }
 
-                struct cmsghdr *cmsg;
-                for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
-                    if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
-                        int *fds = (int *)CMSG_DATA(cmsg);
-                        int nfds = (cmsg->cmsg_len - CMSG_LEN(0)) / sizeof(int32_t);
-                        for (int i = 0; i < nfds; i++) {
-                            close(fds[i]);
+                if (accept) {
+                    iov.iov_len = n;
+
+                    if (sendmsg(client_fd, &msg, 0) < 0) {
+                        perror("sendmsg to client");
+                        ret = EXIT_FAILURE;
+                        break;
+                    }
+
+                    struct cmsghdr *cmsg;
+                    for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+                        if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
+                            int *fds = (int *)CMSG_DATA(cmsg);
+                            int nfds = (cmsg->cmsg_len - CMSG_LEN(0)) / sizeof(int32_t);
+                            for (int i = 0; i < nfds; i++) {
+                                close(fds[i]);
+                            }
                         }
                     }
                 }

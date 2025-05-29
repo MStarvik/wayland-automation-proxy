@@ -7,5 +7,8 @@ LDFLAGS += `pkg-config --libs wayland-client`
 CFLAGS += `pkg-config --cflags wayland-server`
 LDFLAGS += `pkg-config --libs wayland-server`
 
-wayland-automation-proxy: main.o
-	$(CC) -o $@ $^ $(LDFLAGS)
+wayland-automation-proxy: wayland-automation-proxy.o
+
+.PHONY: clean
+clean:
+	rm -f wayland-automation-proxy wayland-automation-proxy.o
