@@ -22,8 +22,8 @@
 
 typedef enum {
     IDLE = 0, // Do not record or replay events
-    TRAIN = 1, // Record events that result from user input (pointer, keyboard, touch)
-    TEST = 2, // Replay recorded events
+    CAPTURE = 1, // Record events that result from user input (pointer, keyboard, touch)
+    REPLAY = 2, // Replay recorded events
 } wap_mode_t;
 
 volatile sig_atomic_t running = 1;
@@ -85,23 +85,20 @@ int main(int argc, char *argv[]) {
 
     uint32_t wl_registry_id = 0;
     uint32_t wl_compositor_id = 0;
-    uint32_t wl_surface_id = 0;
+    // uint32_t wl_surface_id = 0;
     uint32_t wl_seat_id = 0;
     uint32_t wl_pointer_id = 0;
     uint32_t wl_keyboard_id = 0;
     uint32_t wl_touch_id = 0;
 
     // wap_mode_t mode = IDLE;
-    // wap_mode_t mode = TRAIN;
-    wap_mode_t mode = TEST;
+    wap_mode_t mode = CAPTURE;
+    // wap_mode_t mode = REPLAY;
 
     if (argc < 2) {
         fprintf(stderr, "Usage: %s <command>\n", argv[0]);
         return EXIT_FAILURE;
     }
-
-    // char *child_argv;
-
 
     const char *upstream_display = getenv("WAYLAND_DISPLAY");
     if (upstream_display == NULL) {
@@ -226,7 +223,7 @@ int main(int argc, char *argv[]) {
 
     int log_fd = -1;
     struct timespec t1;
-    if (mode == TRAIN) {
+    if (mode == CAPTURE) {
         log_fd = open("events.bin", O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
         if (log_fd < 0) {
             perror("open event log for writing");
@@ -234,7 +231,7 @@ int main(int argc, char *argv[]) {
             unlink(downstream_addr.sun_path);
             return EXIT_FAILURE;
         }
-    } else if (mode == TEST) {
+    } else if (mode == REPLAY) {
         log_fd = open("events.bin", O_RDONLY | O_CLOEXEC);
         if (log_fd < 0) {
             perror("open event log for reading");
@@ -258,12 +255,25 @@ int main(int argc, char *argv[]) {
 
     signal(SIGINT, signal_handler);
 
-    struct timespec t0;
-    struct timespec timeout = {0};
+    struct timespec t0 = {0, 0}; // Initalize to silence compiler warnings
+    struct timespec t;
     int ret = EXIT_SUCCESS;
     while (running) {
-        // int nevents = ppoll(fds, client_fd >= 0 ? 3 : 1, mode == TEST ? &timeout : NULL, NULL);
-        int nevents = ppoll(fds, client_fd >= 0 ? 3 : 1, NULL, NULL);
+        int nfds = 1;
+        struct timespec timeout;
+        struct timespec *timeout_ptr = NULL;
+        if (client_fd >= 0) {
+            nfds = 3;
+
+            if (mode == REPLAY) {
+                struct timespec dt;
+                timespec_sub(&dt, &t, &t0);
+                timespec_sub(&timeout, &t1, &dt);
+                timeout_ptr = &timeout;
+            }
+        }
+
+        int nevents = ppoll(fds, nfds, timeout_ptr, NULL);
         if (nevents < 0) {
             if (errno == EINTR) {
                 break;
@@ -273,7 +283,6 @@ int main(int argc, char *argv[]) {
             break;
         }
 
-        struct timespec t;
         clock_gettime(CLOCK_MONOTONIC, &t);
 
         if (fds[0].revents & POLLIN) {
@@ -391,9 +400,8 @@ int main(int argc, char *argv[]) {
                         }
                     } else if (id == wl_compositor_id) { // wl_compositor
                         if (opcode == 0) { // wl_compositor.create_surface
-                            uint32_t new_id = p[2];
-                            wl_surface_id = new_id;
-                            printf("Created wl_surface with id %u\n", wl_surface_id);
+                            // uint32_t new_id = p[2];
+                            // wl_surface_id = new_id;
                         }
                     } else if (id == wl_seat_id) { // wl_seat
                         if (opcode == 0) { // wl_seat.get_pointer
@@ -484,35 +492,35 @@ int main(int argc, char *argv[]) {
                     uint16_t opcode = p[1] & 0xFFFF;
                     uint16_t size = p[1] >> 16;
                     if (id == wl_pointer_id) { // wl_pointer
-                        if (mode == TRAIN) {
+                        if (mode == CAPTURE) {
                             write(log_fd, &dt, sizeof(dt));
 
-                            p[0] = 0;
+                            // p[0] = 0;
                             write(log_fd, p, size);
-                            p[0] = id;
-                        } else if (mode == TEST) {
+                            // p[0] = id;
+                        } else if (mode == REPLAY) {
                             accept = false;
                         }
                     } else if (id == wl_keyboard_id) { // wl_keyboard
                         if (opcode >= 1 && opcode <= 4) { //wl_keyboard.{enter,leave,key,modifiers}
-                            if (mode == TRAIN) {
+                            if (mode == CAPTURE) {
                                 write(log_fd, &dt, sizeof(dt));
 
-                                p[0] = 1;
+                                // p[0] = 1;
                                 write(log_fd, p, size);
-                                p[0] = id;
-                            } else if (mode == TEST) {
+                                // p[0] = id;
+                            } else if (mode == REPLAY) {
                                 accept = false;
                             }
                         }
                     } else if (id == wl_touch_id) { // wl_touch
-                        if (mode == TRAIN) {
+                        if (mode == CAPTURE) {
                             write(log_fd, &dt, sizeof(dt));
 
-                            p[0] = 2;
+                            // p[0] = 2;
                             write(log_fd, p, size);
-                            p[0] = id;
-                        } else if (mode == TEST) {
+                            // p[0] = id;
+                        } else if (mode == REPLAY) {
                             accept = false;
                         }
                     }
@@ -526,8 +534,12 @@ int main(int argc, char *argv[]) {
                 }
 
                 if (out_iov.iov_len > 0) {
-                    // Only forward the number of bytes we actually received from the compositor
-                    // in_iov.iov_len = n;
+                    // Important: None of the message types we care about
+                    // contain file descriptors, so we don't touch the
+                    // ancillary data. If we want to block messages that do,
+                    // then we would have to keep track of which FD belongs to
+                    // which message, and remove FDs that belong to blocked
+                    // messages.
 
                     msg.msg_iov = &out_iov;
 
@@ -554,7 +566,7 @@ int main(int argc, char *argv[]) {
         }
 
         // Playback of recorded events
-        if (mode == TEST && client_fd >= 0) {
+        if (mode == REPLAY && client_fd >= 0) {
             struct timespec dt;
             timespec_sub(&dt, &t, &t0);
 
@@ -571,8 +583,8 @@ int main(int argc, char *argv[]) {
                 }
 
                 uint32_t *p = (uint32_t *)injection_buffer;
-                uint32_t id = p[0];
-                uint16_t opcode = p[1] & 0xFFFF;
+                // uint32_t id = p[0];
+                // uint16_t opcode = p[1] & 0xFFFF;
                 uint16_t size = p[1] >> 16;
 
                 if (size < 8 || size > sizeof(in_buffer)) {
@@ -581,42 +593,42 @@ int main(int argc, char *argv[]) {
                     goto cleanup;
                 }
 
-                if (id == 0) {
-                    if (wl_pointer_id == 0) {
-                        fprintf(stderr, "Pointer event received before wl_pointer is bound\n");
-                    }
-                    p[0] = wl_pointer_id;
-                    printf("Playing pointer event: %ld.%09ld: id=%u, opcode=%u, size=%u\n",
-                        t1.tv_sec, t1.tv_nsec, p[0], opcode, size);
-                    if (opcode == 2) { // wl_pointer.motion
-                        uint32_t time = p[2];
-                        uint32_t x_int = p[3] >> 8;
-                        uint32_t x_dec = p[3] & 0xFF;
-                        uint32_t y_int = p[4] >> 8;
-                        uint32_t y_dec = p[4] & 0xFF;
-                        double x = x_int + (double)x_dec / 256;
-                        double y = y_int + (double)y_dec / 256;
-                        printf("Pointer motion at time %u: (%.2f, %.2f)\n", time, x, y);
-                    }
-                } else if (id == 1) {
-                    if (wl_keyboard_id == 0) {
-                        fprintf(stderr, "Keyboard event received before wl_keyboard is bound\n");
-                    }
-                    p[0] = wl_keyboard_id;
-                    printf("Playing pointer event: %ld.%09ld: id=%u, opcode=%u, size=%u\n",
-                        t1.tv_sec, t1.tv_nsec, p[0], opcode, size);
-                } else if (id == 2) {
-                    if (wl_touch_id == 0) {
-                        fprintf(stderr, "Touch event received before wl_touch is bound\n");
-                    }
-                    p[0] = wl_touch_id;
-                    printf("Playing pointer event: %ld.%09ld: id=%u, opcode=%u, size=%u\n",
-                        t1.tv_sec, t1.tv_nsec, p[0], opcode, size);
-                } else {
-                    fprintf(stderr, "Unknown event id: %u\n", id);
-                    ret = EXIT_FAILURE;
-                    goto cleanup;
-                }
+                // if (id == 0) {
+                //     if (wl_pointer_id == 0) {
+                //         fprintf(stderr, "Pointer event received before wl_pointer is bound\n");
+                //     }
+                //     p[0] = wl_pointer_id;
+                //     printf("Playing pointer event: %ld.%09ld: id=%u, opcode=%u, size=%u\n",
+                //         t1.tv_sec, t1.tv_nsec, p[0], opcode, size);
+                //     if (opcode == 2) { // wl_pointer.motion
+                //         uint32_t time = p[2];
+                //         uint32_t x_int = p[3] >> 8;
+                //         uint32_t x_dec = p[3] & 0xFF;
+                //         uint32_t y_int = p[4] >> 8;
+                //         uint32_t y_dec = p[4] & 0xFF;
+                //         double x = x_int + (double)x_dec / 256;
+                //         double y = y_int + (double)y_dec / 256;
+                //         printf("Pointer motion at time %u: (%.2f, %.2f)\n", time, x, y);
+                //     }
+                // } else if (id == 1) {
+                //     if (wl_keyboard_id == 0) {
+                //         fprintf(stderr, "Keyboard event received before wl_keyboard is bound\n");
+                //     }
+                //     p[0] = wl_keyboard_id;
+                //     printf("Playing pointer event: %ld.%09ld: id=%u, opcode=%u, size=%u\n",
+                //         t1.tv_sec, t1.tv_nsec, p[0], opcode, size);
+                // } else if (id == 2) {
+                //     if (wl_touch_id == 0) {
+                //         fprintf(stderr, "Touch event received before wl_touch is bound\n");
+                //     }
+                //     p[0] = wl_touch_id;
+                //     printf("Playing pointer event: %ld.%09ld: id=%u, opcode=%u, size=%u\n",
+                //         t1.tv_sec, t1.tv_nsec, p[0], opcode, size);
+                // } else {
+                //     fprintf(stderr, "Unknown event id: %u\n", id);
+                //     ret = EXIT_FAILURE;
+                //     goto cleanup;
+                // }
 
                 if (size > 8) {
                     n = read(log_fd, injection_buffer + 8, size - 8);
@@ -631,7 +643,7 @@ int main(int argc, char *argv[]) {
                     }
                 }
 
-                if (p[0] > 0) {
+                // if (p[0] > 0) {
                     struct iovec iov = {
                         .iov_base = injection_buffer,
                         .iov_len = size
@@ -650,7 +662,7 @@ int main(int argc, char *argv[]) {
                         ret = EXIT_FAILURE;
                         goto cleanup;
                     }
-                }
+                // }
 
                 n = read(log_fd, &t1, sizeof(t1));
                 if (n == 0) {
