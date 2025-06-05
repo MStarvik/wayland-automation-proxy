@@ -59,41 +59,17 @@ int main(int argc, char *argv[]) {
     char out_buffer[BUFFER_LEN];
     char control[CONTROL_LEN];
 
-    // Events are not injected immediately after being read from the file, so
-    // to avoid overwriting an outstanding event when data arrives from either
-    // the client or the compositor, we need a separate buffer.
-    char injection_buffer[1024];
-
-    // If we want to avoid parsing injected events multiple times, we need to
-    // store the size of the event. Might as well store the entire msg struct.
-    // struct iovec injection_iov = {
-    //     .iov_base = injection_buffer,
-    //     .iov_len = 0
-    // };
-    // struct msghdr injection_msg = {
-    //     .msg_name = NULL,
-    //     .msg_namelen = 0,
-    //     .msg_iov = &injection_iov,
-    //     .msg_iovlen = 1,
-    //     .msg_control = NULL,
-    //     .msg_controllen = 0,
-    //     .msg_flags = 0
-    // };
-
     int client_fd = -1;
     int upstream_fd = -1;
 
     uint32_t wl_registry_id = 0;
-    uint32_t wl_compositor_id = 0;
-    // uint32_t wl_surface_id = 0;
     uint32_t wl_seat_id = 0;
     uint32_t wl_pointer_id = 0;
     uint32_t wl_keyboard_id = 0;
     uint32_t wl_touch_id = 0;
 
-    // wap_mode_t mode = IDLE;
-    wap_mode_t mode = CAPTURE;
-    // wap_mode_t mode = REPLAY;
+    // wap_mode_t mode = CAPTURE;
+    wap_mode_t mode = REPLAY;
 
     if (argc < 2) {
         fprintf(stderr, "Usage: %s <command>\n", argv[0]);
@@ -392,16 +368,9 @@ int main(int argc, char *argv[]) {
                             // uint32_t version = p[4 + (interface_len + 3) / 4];
                             uint32_t new_id = p[4 + (interface_len + 3) / 4 + 1];
 
-                            if (strcmp(interface, wl_compositor_interface.name) == 0) {
-                                wl_compositor_id = new_id;
-                            } else if (strcmp(interface, wl_seat_interface.name) == 0) {
+                            if (strcmp(interface, wl_seat_interface.name) == 0) {
                                 wl_seat_id = new_id;
                             }
-                        }
-                    } else if (id == wl_compositor_id) { // wl_compositor
-                        if (opcode == 0) { // wl_compositor.create_surface
-                            // uint32_t new_id = p[2];
-                            // wl_surface_id = new_id;
                         }
                     } else if (id == wl_seat_id) { // wl_seat
                         if (opcode == 0) { // wl_seat.get_pointer
@@ -494,10 +463,7 @@ int main(int argc, char *argv[]) {
                     if (id == wl_pointer_id) { // wl_pointer
                         if (mode == CAPTURE) {
                             write(log_fd, &dt, sizeof(dt));
-
-                            // p[0] = 0;
                             write(log_fd, p, size);
-                            // p[0] = id;
                         } else if (mode == REPLAY) {
                             accept = false;
                         }
@@ -505,10 +471,7 @@ int main(int argc, char *argv[]) {
                         if (opcode >= 1 && opcode <= 4) { //wl_keyboard.{enter,leave,key,modifiers}
                             if (mode == CAPTURE) {
                                 write(log_fd, &dt, sizeof(dt));
-
-                                // p[0] = 1;
                                 write(log_fd, p, size);
-                                // p[0] = id;
                             } else if (mode == REPLAY) {
                                 accept = false;
                             }
@@ -516,10 +479,7 @@ int main(int argc, char *argv[]) {
                     } else if (id == wl_touch_id) { // wl_touch
                         if (mode == CAPTURE) {
                             write(log_fd, &dt, sizeof(dt));
-
-                            // p[0] = 2;
                             write(log_fd, p, size);
-                            // p[0] = id;
                         } else if (mode == REPLAY) {
                             accept = false;
                         }
@@ -571,7 +531,7 @@ int main(int argc, char *argv[]) {
             timespec_sub(&dt, &t, &t0);
 
             while (timespec_leq(&t1, &dt)) {
-                ssize_t n = read(log_fd, injection_buffer, 8);
+                ssize_t n = read(log_fd, out_buffer, 8);
                 if (n == 0) {
                     fprintf(stderr, "End of event log reached\n");
                     mode = IDLE;
@@ -582,7 +542,7 @@ int main(int argc, char *argv[]) {
                     goto cleanup;
                 }
 
-                uint32_t *p = (uint32_t *)injection_buffer;
+                uint32_t *p = (uint32_t *)out_buffer;
                 // uint32_t id = p[0];
                 // uint16_t opcode = p[1] & 0xFFFF;
                 uint16_t size = p[1] >> 16;
@@ -593,45 +553,8 @@ int main(int argc, char *argv[]) {
                     goto cleanup;
                 }
 
-                // if (id == 0) {
-                //     if (wl_pointer_id == 0) {
-                //         fprintf(stderr, "Pointer event received before wl_pointer is bound\n");
-                //     }
-                //     p[0] = wl_pointer_id;
-                //     printf("Playing pointer event: %ld.%09ld: id=%u, opcode=%u, size=%u\n",
-                //         t1.tv_sec, t1.tv_nsec, p[0], opcode, size);
-                //     if (opcode == 2) { // wl_pointer.motion
-                //         uint32_t time = p[2];
-                //         uint32_t x_int = p[3] >> 8;
-                //         uint32_t x_dec = p[3] & 0xFF;
-                //         uint32_t y_int = p[4] >> 8;
-                //         uint32_t y_dec = p[4] & 0xFF;
-                //         double x = x_int + (double)x_dec / 256;
-                //         double y = y_int + (double)y_dec / 256;
-                //         printf("Pointer motion at time %u: (%.2f, %.2f)\n", time, x, y);
-                //     }
-                // } else if (id == 1) {
-                //     if (wl_keyboard_id == 0) {
-                //         fprintf(stderr, "Keyboard event received before wl_keyboard is bound\n");
-                //     }
-                //     p[0] = wl_keyboard_id;
-                //     printf("Playing pointer event: %ld.%09ld: id=%u, opcode=%u, size=%u\n",
-                //         t1.tv_sec, t1.tv_nsec, p[0], opcode, size);
-                // } else if (id == 2) {
-                //     if (wl_touch_id == 0) {
-                //         fprintf(stderr, "Touch event received before wl_touch is bound\n");
-                //     }
-                //     p[0] = wl_touch_id;
-                //     printf("Playing pointer event: %ld.%09ld: id=%u, opcode=%u, size=%u\n",
-                //         t1.tv_sec, t1.tv_nsec, p[0], opcode, size);
-                // } else {
-                //     fprintf(stderr, "Unknown event id: %u\n", id);
-                //     ret = EXIT_FAILURE;
-                //     goto cleanup;
-                // }
-
                 if (size > 8) {
-                    n = read(log_fd, injection_buffer + 8, size - 8);
+                    n = read(log_fd, out_buffer + 8, size - 8);
                     if (n == 0) {
                         fprintf(stderr, "End of event log reached\n");
                         mode = IDLE;
@@ -643,26 +566,24 @@ int main(int argc, char *argv[]) {
                     }
                 }
 
-                // if (p[0] > 0) {
-                    struct iovec iov = {
-                        .iov_base = injection_buffer,
-                        .iov_len = size
-                    };
-                    struct msghdr msg = {
-                        .msg_name = NULL,
-                        .msg_namelen = 0,
-                        .msg_iov = &iov,
-                        .msg_iovlen = 1,
-                        .msg_control = NULL,
-                        .msg_controllen = 0,
-                        .msg_flags = 0
-                    };
-                    if (sendmsg(client_fd, &msg, 0) < 0) {
-                        perror("sendmsg to client");
-                        ret = EXIT_FAILURE;
-                        goto cleanup;
-                    }
-                // }
+                struct iovec iov = {
+                    .iov_base = out_buffer,
+                    .iov_len = size
+                };
+                struct msghdr msg = {
+                    .msg_name = NULL,
+                    .msg_namelen = 0,
+                    .msg_iov = &iov,
+                    .msg_iovlen = 1,
+                    .msg_control = NULL,
+                    .msg_controllen = 0,
+                    .msg_flags = 0
+                };
+                if (sendmsg(client_fd, &msg, 0) < 0) {
+                    perror("sendmsg to client");
+                    ret = EXIT_FAILURE;
+                    goto cleanup;
+                }
 
                 n = read(log_fd, &t1, sizeof(t1));
                 if (n == 0) {

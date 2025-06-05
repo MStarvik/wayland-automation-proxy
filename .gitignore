@@ -1,4 +1,7 @@
 .cache/
 *.o
 compile_commands.json
+err.log
+events.bin
+out.log
 wayland-automation-proxy
