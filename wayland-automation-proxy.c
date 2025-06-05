@@ -111,51 +111,65 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
-    const char *downstream_display = "wayland-2";
-
+    
     const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
     if (runtime_dir == NULL) {
         fprintf(stderr, "XDG_RUNTIME_DIR is not set\n");
         return EXIT_FAILURE;
     }
-
+    
     int server_fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (server_fd < 0) {
         perror("socket downstream");
         return EXIT_FAILURE;
     }
-
+    
+    char downstream_display[32];
     struct sockaddr_un downstream_addr;
     downstream_addr.sun_family = AF_UNIX;
-    snprintf(downstream_addr.sun_path, sizeof(downstream_addr.sun_path), "%s/%s", runtime_dir, downstream_display);
-    unlink(downstream_addr.sun_path);
 
-    if (bind(server_fd, (struct sockaddr *)&downstream_addr, sizeof(downstream_addr)) < 0) {
-        perror("bind downstream");
+    for (int i = 0; i < 100; i++) {
+        snprintf(downstream_display, sizeof(downstream_display), "wayland-automation-proxy-%d", i);
+        if (snprintf(downstream_addr.sun_path, sizeof(downstream_addr.sun_path), "%s/%s", runtime_dir, downstream_display) > (int)sizeof(downstream_addr.sun_path)) {
+            fprintf(stderr, "Socket path too long\n");
+            close(server_fd);
+            return EXIT_FAILURE;
+        }
+
+        if (bind(server_fd, (struct sockaddr *)&downstream_addr, sizeof(downstream_addr)) == 0) {
+            break;
+        } else if (errno != EADDRINUSE) {
+            perror("bind downstream");
+            close(server_fd);
+            return EXIT_FAILURE;
+        }
+    }
+
+    if (i == 100) {
+        fprintf(stderr, "Failed to bind to a unique downstream socket after 100 attempts\n");
         close(server_fd);
-        unlink(downstream_addr.sun_path);
         return EXIT_FAILURE;
     }
 
     if (listen(server_fd, 1) < 0) {
         perror("listen downstream");
-        close(server_fd);
         unlink(downstream_addr.sun_path);
+        close(server_fd);
         return EXIT_FAILURE;
     }
 
     int flags = fcntl(server_fd, F_GETFL, 0);
     if (flags < 0) {
         perror("fcntl");
-        close(server_fd);
         unlink(downstream_addr.sun_path);
+        close(server_fd);
         return EXIT_FAILURE;
     }
 
     if (fcntl(server_fd, F_SETFL, flags | O_NONBLOCK) < 0) {
         perror("fcntl set O_NONBLOCK");
-        close(server_fd);
         unlink(downstream_addr.sun_path);
+        close(server_fd);
         return EXIT_FAILURE;
     }
 
@@ -170,8 +184,8 @@ int main(int argc, char *argv[]) {
     pid_t pid = fork();
     if (pid < 0) {
         perror("fork");
-        close(server_fd);
         unlink(downstream_addr.sun_path);
+        close(server_fd);
         return EXIT_FAILURE;
     }
 
@@ -232,16 +246,16 @@ int main(int argc, char *argv[]) {
         log_fd = open("events.bin", O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
         if (log_fd < 0) {
             perror("open event log for writing");
-            close(server_fd);
             unlink(downstream_addr.sun_path);
+            close(server_fd);
             return EXIT_FAILURE;
         }
     } else if (mode == REPLAY) {
         log_fd = open("events.bin", O_RDONLY | O_CLOEXEC);
         if (log_fd < 0) {
             perror("open event log for reading");
-            close(server_fd);
             unlink(downstream_addr.sun_path);
+            close(server_fd);
             return EXIT_FAILURE;
         }
 
@@ -252,8 +266,8 @@ int main(int argc, char *argv[]) {
         } else if (n != sizeof(t1)) {
             perror("read event log");
             close(log_fd);
-            close(server_fd);
             unlink(downstream_addr.sun_path);
+            close(server_fd);
             return EXIT_FAILURE;
         }
     }
@@ -293,6 +307,8 @@ int main(int argc, char *argv[]) {
         if (fds[0].revents & POLLIN) {
             if (client_fd >= 0) {
                 fprintf(stderr, "Unexpected client connection while already connected\n");
+                int fd = accept(server_fd, NULL, NULL);
+                close(fd);
                 continue;
             }
 
@@ -642,8 +658,8 @@ int main(int argc, char *argv[]) {
         close(client_fd);
     }
 
-    close(server_fd);
     unlink(downstream_addr.sun_path);
+    close(server_fd);
 
     return ret;
 }
