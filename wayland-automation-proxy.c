@@ -54,6 +54,14 @@ static bool timespec_leq(const struct timespec *a, const struct timespec *b) {
     }
 }
 
+static void print_usage(const char *progname) {
+    fprintf(stderr, "Usage: %s [options] <command>\n", progname);
+    fprintf(stderr, "Options:\n");
+    fprintf(stderr, "  -c          Capture events (default behavior)\n");
+    fprintf(stderr, "  -r          Replay captured events\n");
+    fprintf(stderr, "  -h          Show this help message and exit\n");
+}
+
 int main(int argc, char *argv[]) {
     char in_buffer[BUFFER_LEN];
     char out_buffer[BUFFER_LEN];
@@ -68,11 +76,32 @@ int main(int argc, char *argv[]) {
     uint32_t wl_keyboard_id = 0;
     uint32_t wl_touch_id = 0;
 
-    // wap_mode_t mode = CAPTURE;
-    wap_mode_t mode = REPLAY;
+    wap_mode_t mode = CAPTURE;
 
-    if (argc < 2) {
-        fprintf(stderr, "Usage: %s <command>\n", argv[0]);
+    int i = 1;
+    for (; i < argc; i++) {
+        if (argv[i][0] == '-') {
+            if (argv[i][1] == '-' && argv[i][2] == '\0') {
+                i++;
+                break;
+            } else if (argv[i][1] == 'c' && argv[i][2] == '\0') {
+                mode = CAPTURE;
+            } else if (argv[i][1] == 'r' && argv[i][2] == '\0') {
+                mode = REPLAY;
+            } else if (argv[i][1] == 'h' && argv[i][2] == '\0') {
+                print_usage(argv[0]);
+                return EXIT_SUCCESS;
+            } else {
+                fprintf(stderr, "Unknown option: %s\n", argv[i]);
+                return EXIT_FAILURE;
+            }
+        } else {
+            break;
+        }
+    }
+
+    if (i >= argc) {
+        print_usage(argv[0]);
         return EXIT_FAILURE;
     }
 
@@ -191,7 +220,7 @@ int main(int argc, char *argv[]) {
         }
         close(fd);
 
-        if (execvp(argv[1], &argv[1]) < 0) {
+        if (execvp(argv[i], &argv[i]) < 0) {
             perror("execvp");
             exit(EXIT_FAILURE);
         }
